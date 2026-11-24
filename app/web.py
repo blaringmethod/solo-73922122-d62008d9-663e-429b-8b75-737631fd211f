@@ -109,13 +109,14 @@ def declaration_new(recording_id: int):
         if err:
             flash(err, "error")
             return render_template("declaration_form.html", recording=recording, decl=None)
-        if db.find_declaration(recording_id, order_no):
-            flash(f"单号 {order_no} 已存在，请使用更正功能", "error")
-            return render_template("declaration_form.html", recording=recording, decl=None)
         try:
-            decl, _ = db.upsert_declaration(
+            # 只新增：事务内查重，绝不覆盖并发窗口先入账的同号申报。
+            db.create_declaration(
                 recording_id, order_no, period[0], period[1], shares
             )
+        except db.DuplicateOrderError:
+            flash(f"单号 {order_no} 已存在，请使用更正功能；原申报未改动", "error")
+            return render_template("declaration_form.html", recording=recording, decl=None)
         except ValueError as exc:
             flash(str(exc), "error")
             return render_template("declaration_form.html", recording=recording, decl=None)
@@ -126,11 +127,11 @@ def declaration_new(recording_id: int):
 
 @bp.route("/declarations/<int:declaration_id>/edit", methods=["GET", "POST"])
 def declaration_edit(declaration_id: int):
-    decl = db.get_declaration(declaration_id)
-    if decl is None:
-        abort(404)
-    recording = _load_recording_or_404(decl["recording_id"])
     if request.method == "POST":
+        decl = db.get_declaration(declaration_id)
+        if decl is None:
+            abort(404)
+        recording = _load_recording_or_404(decl["recording_id"])
         period = _validate_period(
             request.form.get("start_date", ""), request.form.get("end_date", "")
         )
@@ -145,12 +146,18 @@ def declaration_edit(declaration_id: int):
             return render_template(
                 "declaration_form.html", recording=recording, decl=decl
             )
-        db.upsert_declaration(
-            recording["id"], decl["order_no"], period[0], period[1], shares
-        )
+        try:
+            db.update_declaration(declaration_id, period[0], period[1], shares)
+        except LookupError:
+            abort(404)
         flash(f"申报 {decl['order_no']} 已更正，旧版留档", "ok")
         return redirect(url_for("web.recording_detail", recording_id=recording["id"]))
-    history = db.list_history(declaration_id)
+
+    # 现值与留档取自同一个已提交快照；查档（只读事务）不阻塞其他请求保存更正。
+    decl, history = db.get_declaration_with_history(declaration_id)
+    if decl is None:
+        abort(404)
+    recording = _load_recording_or_404(decl["recording_id"])
     return render_template(
         "declaration_form.html", recording=recording, decl=decl, history=history
     )

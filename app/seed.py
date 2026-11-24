@@ -48,7 +48,7 @@ def seed_demo_data() -> None:
     for item in DEMO:
         recording_id = db.get_or_create_recording(item["title"])
         for order_no, start, end, shares in item["declarations"]:
-            db.upsert_declaration(recording_id, order_no, start, end, shares)
+            db.create_declaration(recording_id, order_no, start, end, shares)
 
         start, end = item["period"]
         declarations = db.list_declarations(recording_id)
